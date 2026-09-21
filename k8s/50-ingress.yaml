@@ -1,0 +1,49 @@
+# Host-based L7 routing inside the cluster, handled by Traefik (k3s's
+# built-in ingress controller, left enabled -- see errata #4). This is the
+# ONE ingress layer; HAProxy in front of it does TCP passthrough only
+# (haproxy/haproxy.cfg), and kube-proxy load-balances across whatever pod
+# replicas sit behind grafana/nodered Services. No third, overlapping LB
+# layer.
+#
+# grafana.fog.local / nodered.fog.local will not resolve over the public
+# internet -- point them at the VIP (192.168.50.10) via /etc/hosts on client
+# machines, or a local dnsmasq/Pi-hole entry, for this lab/course setup.
+#
+# fog-dashboards-tls is a self-signed cert for the lab; see docs/SECURITY.md
+# for the openssl commands, or swap in cert-manager if you extend this
+# beyond coursework.
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fog-dashboards
+  namespace: fog
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  tls:
+    - hosts:
+        - grafana.fog.local
+        - nodered.fog.local
+      secretName: fog-dashboards-tls
+  rules:
+    - host: grafana.fog.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 3000
+    - host: nodered.fog.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nodered
+                port:
+                  number: 1880

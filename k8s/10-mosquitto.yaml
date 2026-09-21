@@ -1,0 +1,123 @@
+# Mosquitto MQTT broker: single-replica StatefulSet + PVC.
+# Deliberately ONE replica: MQTT pub/sub session state (retained messages,
+# QoS1/2 in-flight state, persistent-session subscriptions) lives inside the
+# broker process. Round-robining several independent Mosquitto processes
+# behind a load balancer -- which the original project's generic HAProxy
+# config would have done if ever pointed at MQTT -- silently breaks that
+# state (errata #7/#9). HA here comes from k3s rescheduling this pod onto a
+# surviving node and reattaching the PVC, not from having multiple brokers.
+# If you outgrow one broker's throughput, see the report's "scaling MQTT"
+# appendix (EMQX/VerneMQ cluster + HAProxy stick-table on client_identifier).
+#
+# Before applying, create the two secrets this manifest references:
+#   kubectl -n fog create secret generic mosquitto-tls \
+#     --from-file=ca.crt=ca.crt --from-file=tls.crt=server.crt --from-file=tls.key=server.key
+#   kubectl -n fog create secret generic mosquitto-passwd \
+#     --from-file=passwd=passwd.txt   # generated with: mosquitto_passwd -c passwd.txt sensors
+# (see docs/SECURITY.md for the openssl/mosquitto_passwd commands)
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mosquitto-config
+  namespace: fog
+data:
+  mosquitto.conf: |
+    listener 8883
+    protocol mqtt
+    cafile /mosquitto/certs/ca.crt
+    certfile /mosquitto/certs/tls.crt
+    keyfile /mosquitto/certs/tls.key
+    require_certificate false
+    allow_anonymous false
+    password_file /mosquitto/secrets/passwd
+    acl_file /mosquitto/config/acl
+    persistence true
+    persistence_location /mosquitto/data/
+    log_dest stdout
+  acl: |
+    user sensors
+    topic write sensors/#
+
+    user dashboard
+    topic read sensors/#
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mosquitto
+  namespace: fog
+spec:
+  serviceName: mosquitto
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mosquitto
+  template:
+    metadata:
+      labels:
+        app: mosquitto
+    spec:
+      containers:
+        - name: mosquitto
+          image: eclipse-mosquitto:2
+          ports:
+            - containerPort: 8883
+              name: mqtt-tls
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          volumeMounts:
+            - name: config
+              mountPath: /mosquitto/config/mosquitto.conf
+              subPath: mosquitto.conf
+            - name: config
+              mountPath: /mosquitto/config/acl
+              subPath: acl
+            - name: certs
+              mountPath: /mosquitto/certs
+              readOnly: true
+            - name: passwd
+              mountPath: /mosquitto/secrets
+              readOnly: true
+            - name: data
+              mountPath: /mosquitto/data
+      volumes:
+        - name: config
+          configMap:
+            name: mosquitto-config
+        - name: certs
+          secret:
+            secretName: mosquitto-tls
+        - name: passwd
+          secret:
+            secretName: mosquitto-passwd
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mosquitto
+  namespace: fog
+spec:
+  type: NodePort
+  selector:
+    app: mosquitto
+  ports:
+    - name: mqtt-tls
+      port: 8883
+      targetPort: 8883
+      nodePort: 30883
+      protocol: TCP
