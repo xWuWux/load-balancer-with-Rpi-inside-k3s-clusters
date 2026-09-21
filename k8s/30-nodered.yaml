@@ -1,0 +1,76 @@
+# Node-RED: the edge-processing step between Mosquitto and InfluxDB
+# (filter/aggregate/transform sensor readings before they're written to the
+# time-series store -- this is the actual "edge computing" work the original
+# project never implemented; it only ever load-balanced a static demo page).
+#
+# The MQTT-in -> function -> influxdb-out flow itself is authored in the
+# Node-RED editor (standard node-red-node-mqtt / node-red-contrib-influxdb
+# palette nodes) and persisted to the /data PVC as flows.json -- that's a
+# deliberate design choice, not an omission: hand-writing a flows.json blob
+# here would be less maintainable than building it in the editor once the
+# pod is up, and Node-RED has no supported "flow-as-YAML" input format.
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nodered-data
+  namespace: fog
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nodered
+  namespace: fog
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nodered
+  template:
+    metadata:
+      labels:
+        app: nodered
+    spec:
+      containers:
+        - name: nodered
+          image: nodered/node-red:latest
+          ports:
+            - containerPort: 1880
+          env:
+            - name: TZ
+              value: Europe/Warsaw
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 400m
+              memory: 384Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: nodered-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nodered
+  namespace: fog
+spec:
+  type: ClusterIP
+  selector:
+    app: nodered
+  ports:
+    - port: 1880
+      targetPort: 1880

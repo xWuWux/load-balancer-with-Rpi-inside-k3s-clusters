@@ -1,0 +1,101 @@
+# InfluxDB 2 OSS as the time-series store.
+#
+# Why v2 and not "InfluxDB 3": as of 2026 InfluxDB 2 OSS is in maintenance
+# mode (no new v3 features) but is stable, fully open-source, well-documented,
+# and has no forced retention/query-window limits -- fine for a bounded
+# course project. InfluxDB 3 Core is the forward-looking OSS path (single
+# node, Apache2/MIT), but it dropped Flux, has no v2->v3 migration tool, and
+# its OSS tier is explicitly positioned for "non-production/edge/single-node"
+# use. Re-evaluate if you extend this project long-term. See docs/REFERENCES.md.
+#
+# Before applying, create the admin secret (do NOT keep these as literal
+# values in a committed file -- generate real ones):
+#   kubectl -n fog create secret generic influxdb-admin \
+#     --from-literal=username=admin \
+#     --from-literal=password='<a real password>' \
+#     --from-literal=org=fog-lab \
+#     --from-literal=bucket=sensors \
+#     --from-literal=token='<a real 64+ char random token>'
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: influxdb-data
+  namespace: fog
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 8Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: influxdb
+  namespace: fog
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # RWO PVC + 1 replica: a rolling update would deadlock
+                      # waiting for a second pod to mount the same volume.
+  selector:
+    matchLabels:
+      app: influxdb
+  template:
+    metadata:
+      labels:
+        app: influxdb
+    spec:
+      containers:
+        - name: influxdb
+          image: influxdb:2
+          ports:
+            - containerPort: 8086
+          env:
+            - name: DOCKER_INFLUXDB_INIT_MODE
+              value: setup
+            - name: DOCKER_INFLUXDB_INIT_USERNAME
+              valueFrom:
+                secretKeyRef: { name: influxdb-admin, key: username }
+            - name: DOCKER_INFLUXDB_INIT_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: influxdb-admin, key: password }
+            - name: DOCKER_INFLUXDB_INIT_ORG
+              valueFrom:
+                secretKeyRef: { name: influxdb-admin, key: org }
+            - name: DOCKER_INFLUXDB_INIT_BUCKET
+              valueFrom:
+                secretKeyRef: { name: influxdb-admin, key: bucket }
+            - name: DOCKER_INFLUXDB_INIT_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef: { name: influxdb-admin, key: token }
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/influxdb2
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: influxdb-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: influxdb
+  namespace: fog
+spec:
+  type: ClusterIP    # internal only, on purpose -- not fronted by HAProxy or
+                      # Traefik. Admin access is via `kubectl -n fog
+                      # port-forward svc/influxdb 8086:8086`, not the LAN/WAN.
+  selector:
+    app: influxdb
+  ports:
+    - port: 8086
+      targetPort: 8086

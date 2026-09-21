@@ -1,0 +1,39 @@
+flowchart TB
+    S1["Sensor / publisher 1"]
+    S2["Sensor / publisher 2"]
+    S3["Sensor / publisher N"]
+
+    VIP["Floating VIP\n192.168.50.10 (VRRP)"]
+
+    subgraph LBTIER["HA load-balancer tier"]
+        direction LR
+        LB1["edge-lb1\nHAProxy + keepalived MASTER\n192.168.50.11"]
+        LB2["edge-lb2\nHAProxy + keepalived BACKUP\n192.168.50.12"]
+    end
+
+    subgraph FOG["Fog layer -- k3s cluster (namespace: fog)"]
+        direction TB
+        TR["Traefik ingress\n(built into k3s)"]
+        MQ["Mosquitto broker\nStatefulSet + PVC, 1 replica"]
+        NR["Node-RED\nedge processing / transform"]
+        DB["InfluxDB\ntime-series store"]
+        GF["Grafana\ndashboards"]
+
+        MQ --> NR --> DB
+        TR --> GF
+        TR --> NR
+        GF -- query --> DB
+    end
+
+    S1 -- "MQTT/TLS :8883" --> VIP
+    S2 -- "MQTT/TLS :8883" --> VIP
+    S3 -- "MQTT/TLS :8883" --> VIP
+
+    LB1 <-. VRRP heartbeat .-> LB2
+    VIP --- LB1
+    VIP --- LB2
+
+    LB1 -- "health-checked" --> TR
+    LB1 -- "health-checked" --> MQ
+    LB2 -. standby .-> TR
+    LB2 -. standby .-> MQ

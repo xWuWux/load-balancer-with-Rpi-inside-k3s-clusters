@@ -1,0 +1,39 @@
+# This file is NOT applied with kubectl. k3s's built-in Traefik is deployed by
+# k3s itself as a HelmChart resource on the server node; you customize it by
+# dropping a matching HelmChartConfig into the server's auto-deploy manifest
+# directory, e.g.:
+#
+#   sudo cp 05-traefik-config.yaml /var/lib/rancher/k3s/server/manifests/traefik-config.yaml
+#
+# Do NOT edit /var/lib/rancher/k3s/server/manifests/traefik.yaml directly --
+# k3s overwrites it back to defaults on every restart.
+#
+# This pins Traefik's Service to NodePort with fixed ports (31080/31443) so
+# HAProxy (haproxy.cfg) has stable targets, instead of a `type: LoadBalancer`
+# Service that would sit Pending without ServiceLB/MetalLB (errata #8) -- and
+# we've deliberately disabled ServiceLB (`--disable servicelb`) because the
+# external HAProxy+keepalived pair is this project's load balancer.
+#
+# Chart values differ slightly between k3s releases; if these keys don't take
+# effect on your version, check the shipped chart's values with:
+#   kubectl -n kube-system get helmchart traefik -o yaml
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    service:
+      type: NodePort
+    ports:
+      web:
+        nodePort: 31080
+      websecure:
+        nodePort: 31443
+    additionalArguments:
+      # HAProxy sends PROXY protocol v2 on this path (see haproxy.cfg's
+      # be_traefik_https) so Traefik -- and everything behind it -- sees the
+      # real client IP instead of edge-lb1/edge-lb2's. Only trust it from
+      # the two LB nodes, not the whole LAN.
+      - "--entrypoints.websecure.proxyProtocol.trustedIPs=192.168.50.11/32,192.168.50.12/32"
